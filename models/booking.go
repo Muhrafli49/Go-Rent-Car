@@ -1,15 +1,15 @@
 package models
 
-import (
-	"time"
-)
-
 type Booking struct {
-	ID         int       `db:"id" json:"id"`
-	CustomerID int       `db:"customer_id" json:"customer_id"`
-	CarID      int       `db:"car_id" json:"car_id"`
-	StartRent  time.Time `db:"start_rent" json:"start_rent"`
-	EndRent    time.Time `db:"end_rent" json:"end_rent"`
-	TotalCost  float64   `db:"total_cost" json:"total_cost"`
-	Finished   bool      `db:"finished" json:"finished"`
+	ID              int     `json:"id" db:"id"`
+	CustomerID      int     `json:"customer_id" db:"customer_id"`
+	CarID           int     `json:"car_id" db:"car_id"`
+	StartRent       string  `json:"start_rent" db:"start_rent"` // Tanggal mulai sewa
+	EndRent         string  `json:"end_rent" db:"end_rent"`     // Tanggal selesai sewa
+	TotalCost       float64 `json:"total_cost" db:"total_cost"` // Total biaya sewa
+	Finished        bool    `json:"finished" db:"finished"`     // Status selesai
+	Discount        float64 `json:"discount" db:"discount"`     // Diskon yang diterapkan
+	BookingTypeID   int     `json:"booking_type_id" db:"booking_type_id"` // ID jenis booking
+	DriverID        int     `json:"driver_id" db:"driver_id"`         // ID supir
+	TotalDriverCost float64 `json:"total_driver_cost" db:"total_driver_cost"` // Biaya supir
 }

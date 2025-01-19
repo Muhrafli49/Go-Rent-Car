@@ -1,10 +1,12 @@
 package controllers
 
 import (
+	// "log"
 	"net/http"
 	"rental-mobil/config"
 	"rental-mobil/models"
 	"strconv"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -55,11 +57,11 @@ func GetAllBookings(c echo.Context) error {
 
 	// Prepare the response data including pagination info
 	response := map[string]interface{}{
-		"page":        page,
-		"limit":       limit,
-		"totalPages":  totalPages,
+		"page":         page,
+		"limit":        limit,
+		"totalPages":   totalPages,
 		"totalResults": totalBookings,
-		"data":        bookings,
+		"data":         bookings,
 	}
 
 	c.Logger().Info("Fetched bookings:", bookings)
@@ -68,50 +70,9 @@ func GetAllBookings(c echo.Context) error {
 
 // CreateBooking membuat data booking baru
 func CreateBooking(c echo.Context) error {
-	booking := new(models.Booking)
-	if err := c.Bind(booking); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid input"})
-	}
-
-	// Validasi customer_id dan car_id
-	if booking.CustomerID <= 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid customer ID"})
-	}
-	if booking.CarID <= 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid car ID"})
-	}
-
-	// Validasi start_rent dan end_rent
-	if booking.StartRent.After(booking.EndRent) {
-		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Start rent must be before end rent"})
-	}
-
-	// Hitung total_cost
-	var dailyRent float64
-	query := `SELECT daily_rent FROM cars WHERE id = $1`
-	err := config.DB.Get(&dailyRent, query, booking.CarID)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Failed to fetch car data"})
-	}
-	duration := booking.EndRent.Sub(booking.StartRent).Hours() / 24
-	booking.TotalCost = dailyRent * duration
-
-	// Insert data booking baru
-	insertQuery := `INSERT INTO bookings (customer_id, car_id, start_rent, end_rent, total_cost, finished) 
-                    VALUES ($1, $2, $3, $4, $5, $6)`
-	_, err = config.DB.Exec(insertQuery, booking.CustomerID, booking.CarID, booking.StartRent, booking.EndRent, booking.TotalCost, booking.Finished)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Failed to create booking"})
-	}
-
-	return c.JSON(http.StatusCreated, map[string]string{"message": "Booking created successfully"})
-}
-
-// UpdateBooking memperbarui data booking
-func UpdateBooking(c echo.Context) error {
-    id := c.Param("id")
     booking := new(models.Booking)
 
+    // Bind the request data into the booking struct
     if err := c.Bind(booking); err != nil {
         return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid input"})
     }
@@ -125,37 +86,135 @@ func UpdateBooking(c echo.Context) error {
     }
 
     // Validasi start_rent dan end_rent
-    if booking.StartRent.After(booking.EndRent) {
+    if booking.StartRent > booking.EndRent {
         return c.JSON(http.StatusBadRequest, map[string]string{"message": "Start rent must be before end rent"})
     }
 
-    // Mengecek apakah booking dengan id tersebut ada
-    var existingBooking models.Booking
-    checkQuery := `SELECT id FROM bookings WHERE id = $1`
-    err := config.DB.Get(&existingBooking, checkQuery, id)
+    // Ambil data membership berdasarkan customer_id
+    var membership models.Membership
+    query := `
+        SELECT m.id, m.name, m.discount
+        FROM membership m
+        JOIN customers c ON c.membership_id = m.id
+        WHERE c.id = $1
+    `
+    err := config.DB.Get(&membership, query, booking.CustomerID)
     if err != nil {
-        return c.JSON(http.StatusNotFound, map[string]string{"message": "Booking not found"})
+        return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Failed to fetch membership data"})
     }
 
-    // Hitung total_cost
-    var dailyRent float64
-    query := `SELECT daily_rent FROM cars WHERE id = $1`
-    err = config.DB.Get(&dailyRent, query, booking.CarID)
+    // Ambil data mobil berdasarkan car_id
+    var car models.Car
+    carQuery := `SELECT id, daily_rent FROM cars WHERE id = $1`
+    err = config.DB.Get(&car, carQuery, booking.CarID)
     if err != nil {
         return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Failed to fetch car data"})
     }
 
-    duration := booking.EndRent.Sub(booking.StartRent).Hours() / 24
-    booking.TotalCost = dailyRent * duration
-
-    // Update data booking
-    updateQuery := `UPDATE bookings SET customer_id=$1, car_id=$2, start_rent=$3, end_rent=$4, total_cost=$5, finished=$6 WHERE id=$7`
-    _, err = config.DB.Exec(updateQuery, booking.CustomerID, booking.CarID, booking.StartRent, booking.EndRent, booking.TotalCost, booking.Finished, id)
+    // Mengonversi tanggal mulai dan selesai sewa ke tipe time.Time
+    startRentTime, err := time.Parse("2006-01-02", booking.StartRent)
     if err != nil {
-        return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Failed to update booking"})
+        return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid start rent date format"})
+    }
+    endRentTime, err := time.Parse("2006-01-02", booking.EndRent)
+    if err != nil {
+        return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid end rent date format"})
     }
 
-    return c.JSON(http.StatusOK, map[string]string{"message": "Booking updated successfully"})
+    // Hitung durasi sewa (dalam hari)
+    duration := int(endRentTime.Sub(startRentTime).Hours() / 24)
+
+    // Validasi durasi sewa
+    if duration <= 0 {
+        return c.JSON(http.StatusBadRequest, map[string]string{"message": "End rent date must be after start rent date"})
+    }
+
+    // Hitung total biaya sewa
+    booking.TotalCost = car.DailyRent * float64(duration) * (1 - membership.Discount/100)
+
+    // Ambil data driver berdasarkan driver_id
+    var driver models.Driver
+    driverQuery := `SELECT id, daily_cost FROM driver WHERE id = $1`
+    err = config.DB.Get(&driver, driverQuery, booking.DriverID)
+    if err != nil {
+        return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Failed to fetch driver data"})
+    }
+
+    // Hitung biaya supir
+    booking.TotalDriverCost = driver.DailyCost * float64(duration)
+
+    // Simpan booking ke database
+    insertQuery := `INSERT INTO bookings (customer_id, car_id, start_rent, end_rent, total_cost, finished, discount, booking_type_id, driver_id, total_driver_cost) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+    _, err = config.DB.Exec(insertQuery, booking.CustomerID, booking.CarID, booking.StartRent, booking.EndRent, booking.TotalCost, booking.Finished, membership.Discount, booking.BookingTypeID, booking.DriverID, booking.TotalDriverCost)
+    if err != nil {
+        return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Failed to create booking"})
+    }
+
+    return c.JSON(http.StatusCreated, map[string]string{"message": "Booking created successfully"})
+}
+
+
+// UpdateBooking memperbarui data booking
+func UpdateBooking(c echo.Context) error {
+	id := c.Param("id")
+	booking := new(models.Booking)
+
+	// Bind data dari request body
+	if err := c.Bind(booking); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid input"})
+	}
+
+	// Konversi tanggal string ke time.Time
+	startRent, err := time.Parse("2006-01-02", booking.StartRent)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid start date format"})
+	}
+
+	endRent, err := time.Parse("2006-01-02", booking.EndRent)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid end date format"})
+	}
+
+	// Validasi bahwa startRent tidak setelah endRent
+	if startRent.After(endRent) {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Start rent must be before end rent"})
+	}
+
+	// Periksa apakah booking dengan ID tersebut ada
+	var existingBooking models.Booking
+	checkQuery := `SELECT id FROM bookings WHERE id = $1`
+	err = config.DB.Get(&existingBooking, checkQuery, id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Booking not found"})
+	}
+
+	// Ambil harga sewa harian mobil
+	var dailyRent float64
+	query := `SELECT daily_rent FROM cars WHERE id = $1`
+	err = config.DB.Get(&dailyRent, query, booking.CarID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Failed to fetch car data"})
+	}
+
+	// Hitung durasi dan total biaya
+	duration := endRent.Sub(startRent).Hours() / 24
+	if duration < 1 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "End date must be at least one day after start date"})
+	}
+	booking.TotalCost = dailyRent * duration
+
+	// Update data booking di database
+	updateQuery := `
+        UPDATE bookings 
+        SET customer_id=$1, car_id=$2, start_rent=$3, end_rent=$4, total_cost=$5, finished=$6 
+        WHERE id=$7`
+	_, err = config.DB.Exec(updateQuery, booking.CustomerID, booking.CarID, booking.StartRent, booking.EndRent, booking.TotalCost, booking.Finished, id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Failed to update booking"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"message": "Booking updated successfully"})
 }
 
 // DeleteBooking menghapus data booking
